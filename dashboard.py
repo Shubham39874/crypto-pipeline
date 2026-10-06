@@ -2,6 +2,7 @@ import sqlite3
 import pandas as pd
 import streamlit as st
 import plotly.express as px
+import time
 
 # 1. Page Configuration
 st.set_page_config(
@@ -11,38 +12,45 @@ st.set_page_config(
 )
 
 st.title("🚀 Real-Time Crypto Streaming Dashboard")
-st.markdown("Pipeline Architecture: `Yahoo Finance` ➔ `Kafka Producer` ➔ `Kafka Topic` ➔ `Kafka Consumer` ➔ `SQLite Database` ➔ `Streamlit`")
+st.markdown("Pipeline Architecture: `Yahoo Finance` ➔ `Kafka Producer` ➔ `Kafka Topic` ➔ `Kafka Consumer` ➔ `Lakehouse (SQLite)` ➔ `Streamlit`")
 
-# 2. Database Connection and Data Loading Function
-# We use st.cache_data with a short TTL (time-to-live) or direct querying to fetch fresh data
+# 2. Database Connection and Data Loading
 DB_NAME = "crypto.db"
 
 def load_data():
     try:
         conn = sqlite3.connect(DB_NAME)
-        # Query all records from our crypto table
-        df = pd.read_sql("SELECT * FROM crypto_prices ORDER BY timestamp DESC", conn)
+        # Query from our Silver or Monitored lakehouse table
+        df = pd.read_sql("SELECT * FROM silver_crypto ORDER BY timestamp DESC", conn)
         conn.close()
         return df
     except Exception as e:
-        st.error(f"Error loading data from database: {e}")
-        return pd.DataFrame()
+        # Fallback to base table if silver table isn't present yet
+        try:
+            conn = sqlite3.connect(DB_NAME)
+            df = pd.read_sql("SELECT symbol, price, timestamp FROM crypto_prices ORDER BY timestamp DESC", conn)
+            conn.close()
+            return df
+        except:
+            return pd.DataFrame()
 
 # Load the data
 df = load_data()
 
+# Sidebar controls for Auto-Refresh
+st.sidebar.header("Dashboard Controls")
+auto_refresh = st.sidebar.checkbox("Enable Auto-Refresh (Every 5s)", value=True)
+
 if df.empty:
-    st.warning("⚠️ No data found in the database yet. Make sure your `producer.py` and `db_consumer.py` are running!")
+    st.warning("⚠️ No data found in database yet. Ensure your `producer.py` and lakehouse consumer are running!")
 else:
-    # 3. Sidebar Controls & Filters
-    st.sidebar.header("Dashboard Filters")
+    # Sidebar Symbol Filter
     symbols = df["symbol"].unique().tolist()
     selected_symbol = st.sidebar.selectbox("Select Crypto Symbol", symbols)
     
-    # Filter dataframe by selected symbol
     filtered_df = df[df["symbol"] == selected_symbol]
     
-    # 4. Top Metrics Display
+    # Top Metrics Display
     latest_price = filtered_df["price"].iloc[0]
     previous_price = filtered_df["price"].iloc[1] if len(filtered_df) > 1 else latest_price
     price_change = latest_price - previous_price
@@ -66,10 +74,8 @@ else:
     
     st.markdown("---")
 
-    # 5. Interactive Charts (Plotly)
+    # Interactive Plotly Chart
     st.subheader(f"Price Trend History: {selected_symbol}")
-    
-    # Sort chronologically for the line chart
     chart_df = filtered_df.sort_values("timestamp")
     
     fig = px.line(
@@ -82,10 +88,11 @@ else:
     fig.update_layout(xaxis_title="Timestamp", yaxis_title="Price (USD)")
     st.plotly_chart(fig, use_container_width=True)
 
-    # 6. Raw Data Table View
+    # Raw Data Table
     with st.expander("🔍 View Raw Streaming Data Table"):
         st.dataframe(filtered_df, use_container_width=True)
 
-    # 7. Auto-refresh button for real-time feel
-    if st.button("🔄 Refresh Dashboard Data"):
-        st.rerun()
+# Handle Auto-refresh timer
+if auto_refresh:
+    time.sleep(5)
+    st.rerun()
